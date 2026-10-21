@@ -30,5 +30,6 @@ The included `render.yaml` is ready for a Render web service. Render supplies th
 - Responsive savings dashboard for phone and desktop
 - Virtual balance, goal progress, weekly rhythm chart, and activity feed
 - Deposit and deduction requests with preset amounts and an optional note
+- Multiple savings goals with active-goal switching and delete confirmations
 - Parent review view with approval/decline controls, family code, private link, activity, and parent note
 - LocalStorage fallback plus optional Python sync API

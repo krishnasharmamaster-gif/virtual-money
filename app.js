@@ -11,10 +11,13 @@ const DEFAULT_STATE = {
   },
   balance: 128.5,
   goal: {
+    id: 'goal-bike',
     name: 'A new bike',
     target: 250,
     saved: 128.5,
   },
+  goals: [{ id: 'goal-bike', name: 'A new bike', target: 250, saved: 128.5 }],
+  activeGoalId: 'goal-bike',
   streak: 4,
   week: [5, 0, 10, 0, 20, 0, 0],
   transactions: [
@@ -54,6 +57,7 @@ let currentView = 'savings';
 let parentAccessGranted = false;
 let parentCredential = '';
 let currentMoneyAction = 'add';
+let lastServerError = '';
 let toastTimer = null;
 
 const $ = (selector) => document.querySelector(selector);
@@ -87,7 +91,9 @@ function bindEvents() {
   $('#shareDoneButton').addEventListener('click', () => closeModal('shareModal'));
   $('#learnButton').addEventListener('click', () => showToast('Virtual Money is a practice space — no real money moves here.'));
   $('#profileButton').addEventListener('click', () => showToast('Your profile is ready for the next step.'));
-  $('#addGoalButton').addEventListener('click', () => showToast('Goal editing is coming next. Your bike goal is active.'));
+  $('#addGoalButton').addEventListener('click', openGoalModal);
+  $('#goalForm').addEventListener('submit', handleCreateGoal);
+  $('#goalList').addEventListener('click', handleGoalActionClick);
 
   $$('.modal-close').forEach((button) => {
     button.addEventListener('click', () => closeModal(button.dataset.closeModal));
@@ -151,18 +157,48 @@ function getLocalState() {
 }
 
 function mergeState(next) {
+  const goalSource = Array.isArray(next?.goals)
+    ? next.goals
+    : next?.goal
+      ? [next.goal]
+      : DEFAULT_STATE.goals;
+  const goals = goalSource
+    .filter((goal) => goal && typeof goal === 'object')
+    .map((goal, index) => {
+      const target = Number(goal.target);
+      const saved = Number(goal.saved);
+      return {
+        id: String(goal.id || (index === 0 ? 'goal-bike' : `goal-${index + 1}`)),
+        name: String(goal.name || 'Untitled goal').trim().slice(0, 40) || 'Untitled goal',
+        target: Number.isFinite(target) && target > 0 ? target : 1,
+        saved: Number.isFinite(saved) ? Math.max(0, saved) : 0,
+      };
+    });
+  const requestedActiveId = String(next?.activeGoalId || next?.goal?.id || '');
+  const activeGoal = goals.find((goal) => goal.id === requestedActiveId) || goals[0] || null;
   const merged = {
     ...DEFAULT_STATE,
     ...next,
     familyCode,
     profile: { ...DEFAULT_STATE.profile, ...(next?.profile || {}) },
-    goal: { ...DEFAULT_STATE.goal, ...(next?.goal || {}) },
+    goals,
+    activeGoalId: activeGoal?.id || null,
+    goal: activeGoal ? { ...activeGoal } : null,
     week: Array.isArray(next?.week) ? next.week.slice(0, 7) : DEFAULT_STATE.week.slice(),
     transactions: Array.isArray(next?.transactions) ? next.transactions : DEFAULT_STATE.transactions.slice(),
     pendingRequests: Array.isArray(next?.pendingRequests) ? next.pendingRequests : [],
   };
   while (merged.week.length < 7) merged.week.unshift(0);
   return merged;
+}
+
+function activeGoal() {
+  return state?.goals?.find((goal) => goal.id === state.activeGoalId) || null;
+}
+
+function syncActiveGoalAlias() {
+  const goal = activeGoal();
+  state.goal = goal ? { ...goal } : null;
 }
 
 function persistLocal() {
@@ -194,6 +230,7 @@ async function refreshFromServer(silent = false) {
 }
 
 async function sendToServer(path, payload) {
+  lastServerError = '';
   if (!serverAvailable || window.location.protocol === 'file:') return false;
   try {
     const response = await fetch(path, {
@@ -201,11 +238,16 @@ async function sendToServer(path, payload) {
       headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
       body: JSON.stringify(payload),
     });
-    if (!response.ok) throw new Error(`API returned ${response.status}`);
+    if (!response.ok) {
+      const problem = await response.json().catch(() => ({}));
+      lastServerError = problem.error || `Could not save this change (${response.status}).`;
+      return false;
+    }
     state = mergeState(await response.json());
     persistLocal();
     return true;
   } catch (error) {
+    lastServerError = 'The family server could not be reached. Please try again.';
     serverAvailable = false;
     setSyncStatus('Local preview', false);
     return false;
@@ -242,8 +284,9 @@ function renderBalance() {
   $('#parentBalance').textContent = currency(state.balance);
   $('#monthSaved').textContent = currency(monthSaved());
   $('#parentMonthSaved').textContent = currency(monthSaved());
-  $('#nextMilestone').textContent = `${currency(Math.max(state.goal.target - state.goal.saved, 0))} to go`;
-  $('#goalDueText').textContent = state.goal.name;
+  const goal = activeGoal();
+  $('#nextMilestone').textContent = goal ? `${currency(Math.max(goal.target - goal.saved, 0))} to go` : 'Add a goal';
+  $('#goalDueText').textContent = goal ? goal.name : 'Start with a new goal';
   $('#lastUpdated').textContent = updatedLabel(state.updatedAt);
   $('#reviewFooterText').textContent = state.reviewRequestedAt
     ? 'A parent review has been requested for this family space.'
@@ -251,14 +294,38 @@ function renderBalance() {
 }
 
 function renderGoal() {
-  const percentage = Math.min(100, Math.round((state.goal.saved / state.goal.target) * 100));
-  $('#goalTitle').textContent = state.goal.name;
-  $('#goalPercent').textContent = `${percentage}%`;
-  $('#goalProgress').style.width = `${percentage}%`;
-  $('#goalSaved').textContent = currency(state.goal.saved);
-  $('#goalRemaining').textContent = currency(Math.max(state.goal.target - state.goal.saved, 0));
-  $('#parentGoalName').textContent = state.goal.name;
-  $('#parentGoalProgress').textContent = `${percentage}% of ${currency(state.goal.target)}`;
+  const goals = state.goals || [];
+  $('#goalList').innerHTML = goals.length
+    ? goals.map(goalMarkup).join('')
+    : `<section class="surface-card goal-empty-state"><div class="goal-icon" aria-hidden="true">✦</div><h3>No goals yet</h3><p>Create a goal to give your virtual savings a target.</p><button class="primary-button" type="button" data-create-goal>+ Add a goal</button></section>`;
+
+  const goal = activeGoal();
+  const percentage = goal ? Math.min(100, Math.round((goal.saved / goal.target) * 100)) : 0;
+  $('#parentGoalName').textContent = goal ? goal.name : 'No active goal';
+  $('#parentGoalProgress').textContent = goal
+    ? `${percentage}% of ${currency(goal.target)}`
+    : 'Create a goal to start tracking progress';
+}
+
+function goalMarkup(goal) {
+  const isActive = goal.id === state.activeGoalId;
+  const percentage = Math.min(100, Math.round((goal.saved / goal.target) * 100));
+  const remaining = Math.max(goal.target - goal.saved, 0);
+  return `<article class="surface-card goal-card ${isActive ? 'is-active' : ''}">
+    <div class="card-heading-row">
+      <div class="goal-icon" aria-hidden="true">✦</div>
+      <button class="goal-delete-button" type="button" data-goal-action="delete" data-goal-id="${escapeHtml(goal.id)}" aria-label="Delete ${escapeHtml(goal.name)} goal">Delete</button>
+    </div>
+    <div class="goal-heading">
+      <div><p class="mini-label">${isActive ? 'CURRENT GOAL' : 'SAVING GOAL'}</p><h3>${escapeHtml(goal.name)}</h3></div>
+      <span class="goal-percent">${percentage}%</span>
+    </div>
+    <div class="progress-track" aria-label="Goal progress"><div class="progress-fill" style="width:${percentage}%"></div></div>
+    <div class="goal-footer"><span><strong>${currency(goal.saved)}</strong> saved</span><span>${currency(remaining)} left</span></div>
+    <div class="goal-card-footer"><span class="goal-microcopy"><span class="goal-spark" aria-hidden="true">✧</span>${isActive ? 'Saving toward this goal' : 'Choose this goal to track it'}</span>
+      ${isActive ? '<span class="active-goal-badge">Active</span>' : `<button class="goal-select-button" type="button" data-goal-action="select" data-goal-id="${escapeHtml(goal.id)}">Make active</button>`}
+    </div>
+  </article>`;
 }
 
 function renderWeek() {
@@ -331,6 +398,95 @@ function renderParentView() {
   $('#modalParentCode').textContent = state.parentPin;
 }
 
+function openGoalModal() {
+  $('#goalForm').reset();
+  $('#goalError').classList.add('hidden');
+  openModal('goalModal');
+  window.setTimeout(() => $('#goalNameInput').focus(), 100);
+}
+
+async function handleCreateGoal(event) {
+  event.preventDefault();
+  const name = $('#goalNameInput').value.trim();
+  const target = Number($('#goalTargetInput').value);
+  if (!name || name.length > 40 || !Number.isFinite(target) || target <= 0 || target > 100000) {
+    $('#goalError').textContent = 'Enter a goal name and a target from ₹0.01 to ₹100,000.';
+    $('#goalError').classList.remove('hidden');
+    return;
+  }
+
+  const action = {
+    action: 'create',
+    goal: { id: `goal-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`, name, target: Number(target.toFixed(2)), saved: 0 },
+  };
+  if (!await saveGoalAction(action)) return;
+  closeModal('goalModal');
+  $('#goalForm').reset();
+  renderAll();
+  showToast(`“${name}” goal added.`);
+}
+
+async function handleGoalActionClick(event) {
+  if (event.target.closest('[data-create-goal]')) {
+    openGoalModal();
+    return;
+  }
+  const button = event.target.closest('[data-goal-action][data-goal-id]');
+  if (!button) return;
+  const goalId = button.dataset.goalId;
+  const goal = state.goals.find((item) => item.id === goalId);
+  if (!goal) return;
+
+  if (button.dataset.goalAction === 'delete') {
+    const pendingForGoal = state.pendingRequests.some((request) => request.status === 'pending'
+      && request.addToGoal
+      && (request.goalId || state.activeGoalId) === goalId);
+    if (pendingForGoal) {
+      showToast('Review the pending money request for this goal before deleting it.');
+      return;
+    }
+    if (!window.confirm(`Delete “${goal.name}” and its goal progress? Your virtual balance will not change.`)) return;
+    if (!await saveGoalAction({ action: 'delete', goalId })) return;
+    renderAll();
+    showToast(`“${goal.name}” goal deleted.`);
+    return;
+  }
+
+  if (button.dataset.goalAction === 'select') {
+    if (!await saveGoalAction({ action: 'select', goalId })) return;
+    renderAll();
+    showToast(`Now tracking “${goal.name}”.`);
+  }
+}
+
+async function saveGoalAction(action) {
+  if (serverAvailable) {
+    const synced = await sendToServer(`/api/family/${encodeURIComponent(familyCode)}/goals`, action);
+    if (!synced) {
+      showToast(lastServerError || 'Could not update the goal. Please try again.');
+      return false;
+    }
+  } else {
+    applyLocalGoalAction(action);
+    state.updatedAt = new Date().toISOString();
+    persistLocal();
+  }
+  return true;
+}
+
+function applyLocalGoalAction(action) {
+  if (action.action === 'create') {
+    state.goals.push({ ...action.goal });
+    state.activeGoalId = action.goal.id;
+  } else if (action.action === 'delete') {
+    state.goals = state.goals.filter((goal) => goal.id !== action.goalId);
+    if (state.activeGoalId === action.goalId) state.activeGoalId = state.goals[0]?.id || null;
+  } else if (action.action === 'select' && state.goals.some((goal) => goal.id === action.goalId)) {
+    state.activeGoalId = action.goalId;
+  }
+  syncActiveGoalAlias();
+}
+
 function showView(view) {
   if (view === 'activity') {
     currentView = 'savings';
@@ -387,17 +543,25 @@ function requestParentAccess() {
 function openMoneyModal(action) {
   currentMoneyAction = action;
   const isDeduction = action === 'deduct';
+  const goal = activeGoal();
   $('#addModalTitle').textContent = isDeduction ? 'Request a deduction' : 'Request a deposit';
   $('#moneyModalCopy').textContent = isDeduction
     ? 'Tell your parent what you want to spend. Your virtual balance changes only after they approve it.'
     : 'Tell your parent what you want to add. Your virtual balance changes only after they approve it.';
   $('#moneySubmitButton').innerHTML = `${isDeduction ? 'Ask parent to approve deduction' : 'Ask parent to approve deposit'} <span aria-hidden="true">→</span>`;
-  $('#goalCheckText').innerHTML = isDeduction
-    ? 'Take it from my <strong>A new bike</strong> goal if approved'
-    : 'Add it to my <strong>A new bike</strong> goal if approved';
+  const goalCheckText = $('#goalCheckText');
+  goalCheckText.replaceChildren(document.createTextNode(isDeduction ? 'Take it from my ' : 'Add it to my '));
+  if (goal) {
+    const goalName = document.createElement('strong');
+    goalName.textContent = goal.name;
+    goalCheckText.append(goalName, document.createTextNode(' goal if approved'));
+  } else {
+    goalCheckText.append(document.createTextNode(' no goal is active'));
+  }
+  $('#goalCheck').disabled = !goal;
   $('#amountInput').value = '';
   $('#noteInput').value = '';
-  $('#goalCheck').checked = true;
+  $('#goalCheck').checked = Boolean(goal);
   openModal('addModal');
 }
 
@@ -441,6 +605,7 @@ async function handleAddMoney(event) {
     amount: Number(amount.toFixed(2)),
     note,
     addToGoal,
+    goalId: addToGoal ? state.activeGoalId : null,
     status: 'pending',
     requestedAt: now,
   };
@@ -505,7 +670,9 @@ function applyLocalDecision(request, decision) {
   const amount = Number(request.amount);
   state.balance = Number((state.balance + (isDeduction ? -amount : amount)).toFixed(2));
   if (request.addToGoal) {
-    state.goal.saved = Number(Math.max(0, state.goal.saved + (isDeduction ? -amount : amount)).toFixed(2));
+    const goal = state.goals.find((item) => item.id === (request.goalId || state.activeGoalId));
+    if (goal) goal.saved = Number(Math.max(0, goal.saved + (isDeduction ? -amount : amount)).toFixed(2));
+    syncActiveGoalAlias();
   }
   const transaction = {
     id: request.id,

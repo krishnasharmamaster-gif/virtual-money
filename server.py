@@ -39,7 +39,9 @@ def default_family(code: str) -> dict:
         "parentPin": "2047",
         "profile": {"childName": "Alex", "parentName": "Dad", "initials": "AK"},
         "balance": 128.5,
-        "goal": {"name": "A new bike", "target": 250, "saved": 128.5},
+        "goal": {"id": "goal-bike", "name": "A new bike", "target": 250, "saved": 128.5},
+        "goals": [{"id": "goal-bike", "name": "A new bike", "target": 250, "saved": 128.5}],
+        "activeGoalId": "goal-bike",
         "streak": 4,
         "week": [5, 0, 10, 0, 20, 0, 0],
         "transactions": [
@@ -84,6 +86,38 @@ def json_bytes(payload: dict) -> bytes:
     return json.dumps(payload).encode("utf-8")
 
 
+def ensure_goal_data(family: dict) -> dict:
+    goals = family.get("goals")
+    if not isinstance(goals, list):
+        legacy_goal = family.get("goal")
+        goals = [{**legacy_goal, "id": legacy_goal.get("id") or "goal-bike"}] if isinstance(legacy_goal, dict) else []
+    normalized = []
+    for index, goal in enumerate(goals):
+        if not isinstance(goal, dict):
+            continue
+        try:
+            target = round(float(goal.get("target", 1)), 2)
+            saved = round(max(0, float(goal.get("saved", 0))), 2)
+        except (TypeError, ValueError, OverflowError):
+            continue
+        if not math.isfinite(target) or target <= 0:
+            continue
+        normalized.append({
+            "id": str(goal.get("id") or ("goal-bike" if index == 0 else f"goal-{index + 1}"))[:100],
+            "name": str(goal.get("name") or "Untitled goal").strip()[:40] or "Untitled goal",
+            "target": target,
+            "saved": saved if math.isfinite(saved) else 0,
+        })
+    family["goals"] = normalized
+    active_goal_id = str(family.get("activeGoalId") or "")
+    active_goal = next((goal for goal in normalized if goal["id"] == active_goal_id), None)
+    if active_goal is None and normalized:
+        active_goal = normalized[0]
+    family["activeGoalId"] = active_goal["id"] if active_goal else None
+    family["goal"] = copy.deepcopy(active_goal)
+    return family
+
+
 class VirtualMoneyHandler(SimpleHTTPRequestHandler):
     """Serve the static app and its small family-sync JSON API."""
 
@@ -123,9 +157,10 @@ class VirtualMoneyHandler(SimpleHTTPRequestHandler):
             if code not in store:
                 store[code] = default_family(code)
                 write_store(store)
-            return copy.deepcopy(store[code])
+            return ensure_goal_data(copy.deepcopy(store[code]))
 
     def save_family(self, code: str, family: dict) -> dict:
+        ensure_goal_data(family)
         with LOCK:
             store = read_store()
             store[code] = family
@@ -154,6 +189,56 @@ class VirtualMoneyHandler(SimpleHTTPRequestHandler):
 
         family = self.get_family(code)
         payload = self.read_json()
+
+        if parsed.path == f"/api/family/{code}/goals":
+            action = payload.get("action")
+            goals = family.setdefault("goals", [])
+            if action == "create":
+                candidate = payload.get("goal") or {}
+                if not isinstance(candidate, dict):
+                    self.send_json(400, {"error": "Invalid goal"})
+                    return
+                name = str(candidate.get("name") or "").strip()
+                try:
+                    target = round(float(candidate.get("target", 0)), 2)
+                except (TypeError, ValueError, OverflowError):
+                    target = 0
+                if not name or len(name) > 40 or not math.isfinite(target) or not 0 < target <= 100000:
+                    self.send_json(400, {"error": "Enter a name and a target from ₹0.01 to ₹100,000"})
+                    return
+                goal = {"id": str(uuid.uuid4()), "name": name, "target": target, "saved": 0}
+                goals.append(goal)
+                family["activeGoalId"] = goal["id"]
+            elif action in ("delete", "select"):
+                goal_id = str(payload.get("goalId") or "")
+                goal = next((item for item in goals if item.get("id") == goal_id), None)
+                if not goal:
+                    self.send_json(404, {"error": "Goal not found"})
+                    return
+                if action == "delete":
+                    has_pending_request = any(
+                        item.get("status") == "pending"
+                        and item.get("addToGoal")
+                        and (item.get("goalId") or family.get("activeGoalId")) == goal_id
+                        for item in family.get("pendingRequests", [])
+                    )
+                    if has_pending_request:
+                        self.send_json(409, {"error": "This goal has a pending money request. Review it before deleting the goal."})
+                        return
+                    goals.remove(goal)
+                    if family.get("activeGoalId") == goal_id:
+                        family["activeGoalId"] = goals[0]["id"] if goals else None
+                else:
+                    family["activeGoalId"] = goal_id
+            else:
+                self.send_json(400, {"error": "Choose create, delete, or select"})
+                return
+
+            active = next((item for item in goals if item.get("id") == family.get("activeGoalId")), None)
+            family["goal"] = copy.deepcopy(active)
+            family["updatedAt"] = now_iso()
+            self.send_json(200, self.save_family(code, family))
+            return
 
         if parsed.path == f"/api/family/{code}/transactions":
             self.send_json(403, {"error": "Parent approval is required for money changes"})
@@ -198,6 +283,7 @@ class VirtualMoneyHandler(SimpleHTTPRequestHandler):
                 "action": action,
                 "note": str(request.get("note") or ("Virtual spending" if action == "deduct" else "Virtual savings"))[:60],
                 "addToGoal": bool(request.get("addToGoal", True)),
+                "goalId": request.get("goalId") if request.get("addToGoal", True) else None,
                 "status": "pending",
                 "requestedAt": now_iso(),
             })
@@ -239,9 +325,11 @@ class VirtualMoneyHandler(SimpleHTTPRequestHandler):
                     return
                 family["balance"] = round(balance + (-amount if is_deduction else amount), 2)
                 if request.get("addToGoal"):
-                    goal = family.setdefault("goal", {})
-                    goal_saved = float(goal.get("saved", 0))
-                    goal["saved"] = round(max(0, goal_saved + (-amount if is_deduction else amount)), 2)
+                    goal_id = request.get("goalId") or family.get("activeGoalId")
+                    goal = next((item for item in family.get("goals", []) if item.get("id") == goal_id), None)
+                    if goal:
+                        goal_saved = float(goal.get("saved", 0))
+                        goal["saved"] = round(max(0, goal_saved + (-amount if is_deduction else amount)), 2)
                 family.setdefault("transactions", []).insert(0, {
                     "id": request_id,
                     "amount": amount,
@@ -255,6 +343,8 @@ class VirtualMoneyHandler(SimpleHTTPRequestHandler):
                         week.insert(0, 0)
                     week[-1] = round(float(week[-1] or 0) + amount, 2)
                     family["streak"] = max(1, int(family.get("streak", 0)))
+                active_goal = next((item for item in family.get("goals", []) if item.get("id") == family.get("activeGoalId")), None)
+                family["goal"] = copy.deepcopy(active_goal)
             family["reviewedAt"] = reviewed_at
             family["reviewRequestedAt"] = reviewed_at if any(
                 item.get("status") == "pending" for item in family.get("pendingRequests", [])
