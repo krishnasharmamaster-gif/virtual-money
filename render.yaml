@@ -1,0 +1,7 @@
+services:
+  - type: web
+    name: virtual-money
+    runtime: python
+    plan: free
+    buildCommand: ""
+    startCommand: python server.py

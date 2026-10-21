@@ -1,0 +1,10 @@
+{
+  "name": "Virtual Money — save at your own pace",
+  "short_name": "Virtual Money",
+  "start_url": "/?view=savings",
+  "display": "standalone",
+  "background_color": "#f7f5ef",
+  "theme_color": "#173d30",
+  "description": "A calm virtual money space with parent review.",
+  "icons": []
+}
