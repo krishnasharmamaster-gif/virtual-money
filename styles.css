@@ -495,6 +495,89 @@ h1 em,
   white-space: nowrap;
 }
 
+.balance-action-group {
+  align-items: stretch;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.spend-action {
+  color: rgba(255, 254, 250, 0.82);
+  font-size: 10px;
+  padding: 9px 12px;
+  white-space: nowrap;
+}
+
+.spend-action:hover {
+  background: rgba(255, 254, 250, 0.1);
+  border-color: rgba(255, 254, 250, 0.45);
+  color: var(--white);
+}
+
+.child-pending-panel {
+  background: rgba(220, 215, 243, 0.34);
+  border: 1px solid rgba(220, 215, 243, 0.72);
+  border-radius: 14px;
+  margin-top: 14px;
+  padding: 15px 17px;
+}
+
+.pending-panel-heading {
+  align-items: center;
+  display: flex;
+  gap: 11px;
+}
+
+.pending-mark {
+  align-items: center;
+  background: var(--lilac);
+  border-radius: 9px;
+  color: #6e6790;
+  display: inline-flex;
+  font-size: 18px;
+  height: 34px;
+  justify-content: center;
+  width: 34px;
+}
+
+.pending-panel-heading h2,
+.pending-section-heading h3 {
+  font-size: 13px;
+  letter-spacing: -0.02em;
+  margin: 0;
+}
+
+.pending-panel-heading p {
+  color: var(--ink-soft);
+  font-size: 10px;
+  margin: 4px 0 0;
+}
+
+.child-pending-list {
+  display: grid;
+  gap: 7px;
+  margin-top: 12px;
+}
+
+.child-pending-item {
+  align-items: center;
+  background: rgba(255, 254, 250, 0.7);
+  border-radius: 8px;
+  display: flex;
+  justify-content: space-between;
+  padding: 9px 11px;
+}
+
+.child-pending-item strong {
+  font-size: 10px;
+}
+
+.child-pending-item span {
+  color: var(--ink-soft);
+  font-size: 9px;
+}
+
 .plus-icon {
   font-size: 18px;
   font-weight: 400;
@@ -966,6 +1049,114 @@ h1 em,
   padding-top: 0;
 }
 
+.pending-requests-section {
+  background: rgba(220, 215, 243, 0.28);
+  border: 1px solid rgba(220, 215, 243, 0.72);
+  border-radius: 11px;
+  margin-top: 18px;
+  padding: 13px;
+}
+
+.pending-section-heading {
+  align-items: center;
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+
+.pending-section-heading h3 {
+  margin-top: 5px;
+}
+
+.pending-count {
+  background: var(--lilac);
+  border-radius: 999px;
+  color: #6e6790;
+  font-family: 'DM Mono', monospace;
+  font-size: 8px;
+  padding: 6px 8px;
+}
+
+.pending-request-card {
+  background: var(--white);
+  border: 1px solid #e7e3f2;
+  border-radius: 9px;
+  margin-top: 8px;
+  padding: 11px;
+}
+
+.pending-request-top,
+.pending-request-actions {
+  align-items: center;
+  display: flex;
+  justify-content: space-between;
+}
+
+.pending-request-top strong {
+  color: var(--forest);
+  font-family: 'DM Mono', monospace;
+  font-size: 13px;
+}
+
+.pending-type {
+  border-radius: 999px;
+  font-size: 8px;
+  font-weight: 700;
+  padding: 5px 8px;
+  text-transform: uppercase;
+}
+
+.pending-type.deposit {
+  background: rgba(188, 233, 217, 0.55);
+  color: var(--mint-dark);
+}
+
+.pending-type.deduction {
+  background: rgba(255, 210, 183, 0.5);
+  color: #9e5b3c;
+}
+
+.pending-request-note {
+  color: var(--ink-soft);
+  font-size: 10px;
+  line-height: 1.45;
+  margin: 9px 0 5px;
+}
+
+.pending-request-meta {
+  color: var(--ink-faint);
+  font-size: 8px;
+}
+
+.pending-request-actions {
+  justify-content: flex-end;
+  gap: 7px;
+  margin-top: 10px;
+}
+
+.pending-request-actions button {
+  border-radius: 7px;
+  font-size: 9px;
+  font-weight: 700;
+  padding: 7px 10px;
+}
+
+.approve-request-button {
+  background: var(--mint);
+  border: 1px solid var(--mint);
+  color: var(--forest);
+}
+
+.decline-request-button {
+  background: transparent;
+  border: 1px solid var(--line);
+  color: var(--ink-soft);
+}
+
+.activity-amount.is-negative {
+  color: #b1634a;
+}
+
 .review-footer {
   align-items: center;
   background: rgba(220, 215, 243, 0.32);
@@ -1389,9 +1580,14 @@ h1 em,
     grid-template-columns: 1fr 1fr;
   }
 
-  .balance-action {
+  .balance-action-group {
     grid-column: span 2;
-    justify-self: start;
+    flex-direction: row;
+    flex-wrap: wrap;
+  }
+
+  .balance-action-group > button {
+    flex: 1;
   }
 }
 

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import copy
 import json
+import math
 import os
 import re
 import threading
@@ -46,6 +47,7 @@ def default_family(code: str) -> dict:
             {"id": "welcome-2", "amount": 15, "note": "Gift from Grandma", "type": "gift", "createdAt": "2026-10-16T10:00:00.000Z"},
             {"id": "welcome-3", "amount": 10, "note": "Weekly save", "type": "save", "createdAt": "2026-10-14T10:00:00.000Z"},
         ],
+        "pendingRequests": [],
         "parentNote": "",
         "reviewedAt": None,
         "reviewRequestedAt": None,
@@ -69,7 +71,7 @@ def write_store(store: dict) -> None:
 
 
 def family_code_from_path(path: str) -> str | None:
-    match = re.fullmatch(r"/api/family/([^/]+)(?:/([^/]+))?", path)
+    match = re.fullmatch(r"/api/family/([^/]+)(?:/.*)?", path)
     if not match:
         return None
     code = unquote(match.group(1)).upper()
@@ -83,7 +85,7 @@ def json_bytes(payload: dict) -> bytes:
 
 
 class VirtualMoneyHandler(SimpleHTTPRequestHandler):
-    """Serve the static app plus three tiny JSON endpoints."""
+    """Serve the static app and its small family-sync JSON API."""
 
     protocol_version = "HTTP/1.1"
 
@@ -94,6 +96,9 @@ class VirtualMoneyHandler(SimpleHTTPRequestHandler):
         print(f"[virtual-money] {self.address_string()} - {format % args}")
 
     def send_json(self, status: int, payload: dict) -> None:
+        if "familyCode" in payload:
+            payload = copy.deepcopy(payload)
+            payload.pop("parentPin", None)
         body = json_bytes(payload)
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
@@ -107,7 +112,8 @@ class VirtualMoneyHandler(SimpleHTTPRequestHandler):
             size = int(self.headers.get("Content-Length", "0"))
             if size > 100_000:
                 return {}
-            return json.loads(self.rfile.read(size) or b"{}")
+            payload = json.loads(self.rfile.read(size) or b"{}")
+            return payload if isinstance(payload, dict) else {}
         except (ValueError, json.JSONDecodeError):
             return {}
 
@@ -131,7 +137,9 @@ class VirtualMoneyHandler(SimpleHTTPRequestHandler):
         if parsed.path.startswith("/api/"):
             code = family_code_from_path(parsed.path)
             if code and parsed.path == f"/api/family/{code}":
-                self.send_json(200, self.get_family(code))
+                public_family = self.get_family(code)
+                public_family.pop("parentPin", None)
+                self.send_json(200, public_family)
                 return
             self.send_json(404, {"error": "Not found"})
             return
@@ -147,38 +155,115 @@ class VirtualMoneyHandler(SimpleHTTPRequestHandler):
         family = self.get_family(code)
         payload = self.read_json()
 
-        if parsed.path.endswith("/transactions"):
-            transaction = payload.get("transaction") or {}
+        if parsed.path == f"/api/family/{code}/transactions":
+            self.send_json(403, {"error": "Parent approval is required for money changes"})
+            return
+
+        if parsed.path == f"/api/family/{code}/requests":
+            request = payload.get("request") or {}
+            if not isinstance(request, dict):
+                self.send_json(400, {"error": "Invalid request"})
+                return
             try:
-                amount = round(float(transaction.get("amount", 0)), 2)
-            except (TypeError, ValueError):
+                amount = round(float(request.get("amount", 0)), 2)
+            except (TypeError, ValueError, OverflowError):
                 amount = 0
-            if not 0 < amount <= 100000:
+            if not math.isfinite(amount) or not 0 < amount <= 100000:
                 self.send_json(400, {"error": "Invalid amount"})
                 return
+            action = request.get("action")
+            if action not in ("add", "deduct"):
+                self.send_json(400, {"error": "Invalid request action"})
+                return
+            if action == "deduct":
+                pending_deductions = sum(
+                    float(item.get("amount", 0) or 0)
+                    for item in family.get("pendingRequests", [])
+                    if item.get("status") == "pending" and item.get("action") == "deduct"
+                )
+                available = round(float(family.get("balance", 0)) - pending_deductions, 2)
+                if amount > available:
+                    self.send_json(400, {"error": "Requested deduction exceeds available balance"})
+                    return
 
-            transaction = {
-                "id": str(transaction.get("id") or uuid.uuid4()),
+            request_id = str(request.get("id") or uuid.uuid4())[:100]
+            pending_requests = family.setdefault("pendingRequests", [])
+            existing = next((item for item in pending_requests if item.get("id") == request_id), None)
+            if existing:
+                self.send_json(200, family)
+                return
+            pending_requests.insert(0, {
+                "id": request_id,
                 "amount": amount,
-                "note": str(transaction.get("note") or "Virtual savings")[:60],
-                "type": "save",
-                "createdAt": str(transaction.get("createdAt") or now_iso()),
-            }
-            existing_ids = {item.get("id") for item in family.get("transactions", [])}
-            if transaction["id"] not in existing_ids:
-                family.setdefault("transactions", []).insert(0, transaction)
-                family["balance"] = round(float(family.get("balance", 0)) + amount, 2)
-                if payload.get("addToGoal", True):
-                    goal = family.setdefault("goal", {})
-                    goal["saved"] = round(float(goal.get("saved", 0)) + amount, 2)
-                week = family.setdefault("week", [0] * 7)
-                week[-1] = round(float(week[-1] or 0) + amount, 2)
-                family["reviewRequestedAt"] = now_iso()
+                "action": action,
+                "note": str(request.get("note") or ("Virtual spending" if action == "deduct" else "Virtual savings"))[:60],
+                "addToGoal": bool(request.get("addToGoal", True)),
+                "status": "pending",
+                "requestedAt": now_iso(),
+            })
+            family["reviewRequestedAt"] = now_iso()
             family["updatedAt"] = now_iso()
             self.send_json(200, self.save_family(code, family))
             return
 
-        if parsed.path.endswith("/review"):
+        decision_match = re.fullmatch(rf"/api/family/{re.escape(code)}/requests/([^/]+)/decision", parsed.path)
+        if decision_match:
+            parent_pin = str(payload.get("parentPin") or "")
+            if parent_pin != str(family.get("parentPin", "2047")):
+                self.send_json(403, {"error": "Parent code is incorrect"})
+                return
+            decision = payload.get("decision")
+            if decision not in ("approve", "decline"):
+                self.send_json(400, {"error": "Invalid decision"})
+                return
+            request_id = unquote(decision_match.group(1))
+            request = next(
+                (item for item in family.get("pendingRequests", []) if item.get("id") == request_id),
+                None,
+            )
+            if not request or request.get("status") != "pending":
+                self.send_json(404, {"error": "Pending request not found"})
+                return
+
+            reviewed_at = now_iso()
+            request["status"] = "approved" if decision == "approve" else "declined"
+            request["reviewedAt"] = reviewed_at
+            if decision == "approve":
+                amount = round(float(request.get("amount", 0)), 2)
+                is_deduction = request.get("action") == "deduct"
+                balance = float(family.get("balance", 0))
+                if is_deduction and amount > balance:
+                    request["status"] = "pending"
+                    request.pop("reviewedAt", None)
+                    self.send_json(400, {"error": "Balance is too low to approve this deduction"})
+                    return
+                family["balance"] = round(balance + (-amount if is_deduction else amount), 2)
+                if request.get("addToGoal"):
+                    goal = family.setdefault("goal", {})
+                    goal_saved = float(goal.get("saved", 0))
+                    goal["saved"] = round(max(0, goal_saved + (-amount if is_deduction else amount)), 2)
+                family.setdefault("transactions", []).insert(0, {
+                    "id": request_id,
+                    "amount": amount,
+                    "note": str(request.get("note") or ("Virtual spending" if is_deduction else "Virtual savings"))[:60],
+                    "type": "spend" if is_deduction else "save",
+                    "createdAt": reviewed_at,
+                })
+                if not is_deduction:
+                    week = family.setdefault("week", [0] * 7)
+                    while len(week) < 7:
+                        week.insert(0, 0)
+                    week[-1] = round(float(week[-1] or 0) + amount, 2)
+                    family["streak"] = max(1, int(family.get("streak", 0)))
+            family["reviewedAt"] = reviewed_at
+            family["reviewRequestedAt"] = reviewed_at if any(
+                item.get("status") == "pending" for item in family.get("pendingRequests", [])
+            ) else None
+            family["updatedAt"] = reviewed_at
+            self.send_json(200, self.save_family(code, family))
+            return
+
+        if parsed.path == f"/api/family/{code}/review":
             family["parentNote"] = str(payload.get("note") or "")[:500]
             family["reviewedAt"] = str(payload.get("reviewedAt") or now_iso())
             family["updatedAt"] = now_iso()

@@ -102,10 +102,26 @@
                   <strong id="nextMilestone">₹121.50 to go</strong>
                   <span class="stat-muted" id="goalDueText">New bike fund</span>
                 </div>
-                <button class="primary-button balance-action" id="openAddButton" type="button">
-                  <span class="plus-icon" aria-hidden="true">+</span> Add virtual money
-                </button>
+                <div class="balance-action-group">
+                  <button class="primary-button balance-action" id="openAddButton" type="button">
+                    <span class="plus-icon" aria-hidden="true">+</span> Request deposit
+                  </button>
+                  <button class="outline-button spend-action" id="openSpendButton" type="button">
+                    Request deduction <span aria-hidden="true">↗</span>
+                  </button>
+                </div>
               </div>
+            </section>
+
+            <section class="child-pending-panel hidden" id="childPendingSection" aria-labelledby="childPendingTitle">
+              <div class="pending-panel-heading">
+                <span class="pending-mark" aria-hidden="true">⌑</span>
+                <div>
+                  <h2 id="childPendingTitle">Waiting for parent approval</h2>
+                  <p>Your balance changes after a parent reviews these requests.</p>
+                </div>
+              </div>
+              <div class="child-pending-list" id="childPendingList"></div>
             </section>
 
             <div class="section-heading-row">
@@ -218,6 +234,16 @@
                   </div>
                   <span class="review-count" id="reviewCount">3 moves</span>
                 </div>
+                <section class="pending-requests-section hidden" id="pendingRequestsSection" aria-labelledby="pendingRequestsTitle">
+                  <div class="pending-section-heading">
+                    <div>
+                      <p class="mini-label">NEEDS YOUR REVIEW</p>
+                      <h3 id="pendingRequestsTitle">Money requests</h3>
+                    </div>
+                    <span class="pending-count" id="pendingRequestsCount">0 pending</span>
+                  </div>
+                  <div id="pendingRequestsList"></div>
+                </section>
                 <div class="parent-activity-list" id="parentActivityList"></div>
                 <div class="review-footer">
                   <span class="review-footer-icon" aria-hidden="true">✦</span>
@@ -289,7 +315,7 @@
         <div class="modal-icon mint-icon" aria-hidden="true">+</div>
         <p class="eyebrow">NEW MONEY MOVE</p>
         <h2 id="addModalTitle">Add virtual money</h2>
-        <p class="modal-copy">Log money you want to practice saving. Nothing here connects to a real account.</p>
+        <p class="modal-copy" id="moneyModalCopy">Send a virtual money request to your parent. Your balance changes only after they approve it.</p>
         <form id="addMoneyForm">
           <label class="field-label" for="amountInput">HOW MUCH?</label>
           <div class="amount-input-wrap">
@@ -307,9 +333,9 @@
           <label class="goal-check-row" for="goalCheck">
             <input id="goalCheck" type="checkbox" checked />
             <span class="fake-check" aria-hidden="true">✓</span>
-            <span>Add it to my <strong>A new bike</strong> goal</span>
+            <span id="goalCheckText">Add it to my <strong>A new bike</strong> goal if approved</span>
           </label>
-          <button class="primary-button full-width" type="submit">Save it in Virtual Money <span aria-hidden="true">→</span></button>
+          <button class="primary-button full-width" id="moneySubmitButton" type="submit">Ask parent to approve <span aria-hidden="true">→</span></button>
         </form>
       </div>
     </div>

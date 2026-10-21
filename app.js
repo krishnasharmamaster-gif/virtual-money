@@ -40,6 +40,7 @@ const DEFAULT_STATE = {
       createdAt: '2026-10-14T10:00:00.000Z',
     },
   ],
+  pendingRequests: [],
   parentNote: '',
   reviewedAt: null,
   reviewRequestedAt: null,
@@ -51,6 +52,8 @@ let familyCode = getFamilyCode();
 let serverAvailable = false;
 let currentView = 'savings';
 let parentAccessGranted = false;
+let parentCredential = '';
+let currentMoneyAction = 'add';
 let toastTimer = null;
 
 const $ = (selector) => document.querySelector(selector);
@@ -71,12 +74,13 @@ async function init() {
   }
 
   window.setInterval(() => {
-    if (serverAvailable && currentView === 'parent') refreshFromServer(true);
+    if (serverAvailable) refreshFromServer(true);
   }, 15000);
 }
 
 function bindEvents() {
-  $$('#openAddButton').forEach((button) => button.addEventListener('click', () => openModal('addModal')));
+  $('#openAddButton').addEventListener('click', () => openMoneyModal('add'));
+  $('#openSpendButton').addEventListener('click', () => openMoneyModal('deduct'));
   $('#shareButton').addEventListener('click', () => openModal('shareModal'));
   $('#openParentButton').addEventListener('click', requestParentAccess);
   $('#backToSavings').addEventListener('click', () => showView('savings'));
@@ -113,6 +117,7 @@ function bindEvents() {
   $('#addMoneyForm').addEventListener('submit', handleAddMoney);
   $('#pinForm').addEventListener('submit', handlePinSubmit);
   $('#markReviewedButton').addEventListener('click', saveParentNote);
+  $('#pendingRequestsList').addEventListener('click', handleRequestDecisionClick);
 
   $$('[data-copy-target]').forEach((button) => {
     button.addEventListener('click', () => copyTarget(button.dataset.copyTarget));
@@ -154,6 +159,7 @@ function mergeState(next) {
     goal: { ...DEFAULT_STATE.goal, ...(next?.goal || {}) },
     week: Array.isArray(next?.week) ? next.week.slice(0, 7) : DEFAULT_STATE.week.slice(),
     transactions: Array.isArray(next?.transactions) ? next.transactions : DEFAULT_STATE.transactions.slice(),
+    pendingRequests: Array.isArray(next?.pendingRequests) ? next.pendingRequests : [],
   };
   while (merged.week.length < 7) merged.week.unshift(0);
   return merged;
@@ -179,6 +185,7 @@ async function refreshFromServer(silent = false) {
     persistLocal();
     serverAvailable = true;
     setSyncStatus('Live sync', true);
+    renderAll();
     if (!silent) showToast('Your family space is ready to sync.');
   } catch (error) {
     serverAvailable = false;
@@ -268,20 +275,53 @@ function renderWeek() {
 
 function renderActivity() {
   const sorted = [...state.transactions].sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+  const pending = state.pendingRequests.filter((request) => request.status === 'pending');
   $('#activityList').innerHTML = sorted.slice(0, 5).map(activityMarkup).join('');
   $('#parentActivityList').innerHTML = sorted.slice(0, 6).map(activityMarkup).join('');
   $('#reviewCount').textContent = `${sorted.length} ${sorted.length === 1 ? 'move' : 'moves'}`;
+  $('#childPendingSection').classList.toggle('hidden', pending.length === 0);
+  $('#childPendingList').innerHTML = pending.map(childPendingMarkup).join('');
+  $('#pendingRequestsSection').classList.toggle('hidden', pending.length === 0);
+  $('#pendingRequestsCount').textContent = `${pending.length} pending`;
+  $('#pendingRequestsList').innerHTML = pending.map(parentRequestMarkup).join('');
 }
 
 function activityMarkup(item) {
-  const iconClass = item.type === 'gift' ? 'gift' : item.type === 'streak' ? 'streak' : '';
-  const icon = item.type === 'gift' ? '♡' : item.type === 'streak' ? '✦' : '+';
-  const label = item.note || (item.type === 'gift' ? 'A thoughtful gift' : 'Virtual savings');
+  const isDeduction = item.type === 'spend';
+  const iconClass = item.type === 'gift' ? 'gift' : item.type === 'streak' ? 'streak' : isDeduction ? 'gift' : '';
+  const icon = item.type === 'gift' ? '♡' : item.type === 'streak' ? '✦' : isDeduction ? '−' : '+';
+  const label = item.note || (item.type === 'gift' ? 'A thoughtful gift' : isDeduction ? 'Virtual spending' : 'Virtual savings');
+  const moveLabel = item.type === 'gift' ? 'Gift' : isDeduction ? 'Approved deduction' : 'Approved deposit';
+  const amountPrefix = isDeduction ? '−' : '+';
   return `<div class="activity-row">
     <span class="activity-icon ${iconClass}" aria-hidden="true">${icon}</span>
-    <div class="activity-main"><strong>${escapeHtml(label)}</strong><span>${formatDate(item.createdAt)} · ${item.type === 'gift' ? 'Gift' : 'Saved to goal'}</span></div>
-    <span class="activity-amount">+${currency(item.amount)}</span>
+    <div class="activity-main"><strong>${escapeHtml(label)}</strong><span>${formatDate(item.createdAt)} · ${moveLabel}</span></div>
+    <span class="activity-amount ${isDeduction ? 'is-negative' : ''}">${amountPrefix}${currency(item.amount)}</span>
   </div>`;
+}
+
+function childPendingMarkup(request) {
+  const actionLabel = request.action === 'deduct' ? 'Deduction requested' : 'Deposit requested';
+  return `<div class="child-pending-item">
+    <strong>${actionLabel} · ${currency(request.amount)}</strong>
+    <span>${escapeHtml(request.note || 'Waiting for parent')}</span>
+  </div>`;
+}
+
+function parentRequestMarkup(request) {
+  const isDeduction = request.action === 'deduct';
+  const kind = isDeduction ? 'Deduction' : 'Deposit';
+  const className = isDeduction ? 'deduction' : 'deposit';
+  const dateLabel = request.requestedAt ? formatDate(request.requestedAt) : 'Just now';
+  return `<article class="pending-request-card">
+    <div class="pending-request-top"><span class="pending-type ${className}">${kind}</span><strong>${currency(request.amount)}</strong></div>
+    <p class="pending-request-note">${escapeHtml(request.note || (isDeduction ? 'Wants to spend virtual money' : 'Wants to add virtual savings'))}</p>
+    <span class="pending-request-meta">Requested ${dateLabel}${request.addToGoal ? ' · Affects goal' : ''}</span>
+    <div class="pending-request-actions">
+      <button class="decline-request-button" type="button" data-request-action="decline" data-request-id="${escapeHtml(request.id)}">Decline</button>
+      <button class="approve-request-button" type="button" data-request-action="approve" data-request-id="${escapeHtml(request.id)}">Approve</button>
+    </div>
+  </article>`;
 }
 
 function renderParentView() {
@@ -344,13 +384,32 @@ function requestParentAccess() {
   window.setTimeout(() => $('#pinInput').focus(), 100);
 }
 
+function openMoneyModal(action) {
+  currentMoneyAction = action;
+  const isDeduction = action === 'deduct';
+  $('#addModalTitle').textContent = isDeduction ? 'Request a deduction' : 'Request a deposit';
+  $('#moneyModalCopy').textContent = isDeduction
+    ? 'Tell your parent what you want to spend. Your virtual balance changes only after they approve it.'
+    : 'Tell your parent what you want to add. Your virtual balance changes only after they approve it.';
+  $('#moneySubmitButton').innerHTML = `${isDeduction ? 'Ask parent to approve deduction' : 'Ask parent to approve deposit'} <span aria-hidden="true">→</span>`;
+  $('#goalCheckText').innerHTML = isDeduction
+    ? 'Take it from my <strong>A new bike</strong> goal if approved'
+    : 'Add it to my <strong>A new bike</strong> goal if approved';
+  $('#amountInput').value = '';
+  $('#noteInput').value = '';
+  $('#goalCheck').checked = true;
+  openModal('addModal');
+}
+
 function handlePinSubmit(event) {
   event.preventDefault();
-  if ($('#pinInput').value.trim() !== String(state.parentPin)) {
+  const enteredPin = $('#pinInput').value.trim();
+  if (enteredPin !== String(state.parentPin)) {
     $('#pinError').classList.remove('hidden');
     $('#pinInput').select();
     return;
   }
+  parentCredential = enteredPin;
   parentAccessGranted = true;
   closeModal('pinModal');
   showParentView();
@@ -360,34 +419,107 @@ function handlePinSubmit(event) {
 async function handleAddMoney(event) {
   event.preventDefault();
   const amount = Number($('#amountInput').value);
-  if (!Number.isFinite(amount) || amount <= 0) {
-    showToast('Add an amount greater than zero.');
+  if (!Number.isFinite(amount) || amount <= 0 || amount > 100000) {
+    showToast('Enter an amount between ₹0.01 and ₹100,000.');
     return;
   }
 
-  const note = $('#noteInput').value.trim() || 'Virtual savings';
+  const pendingDeductions = state.pendingRequests
+    .filter((request) => request.action === 'deduct' && request.status === 'pending')
+    .reduce((sum, request) => sum + Number(request.amount || 0), 0);
+  if (currentMoneyAction === 'deduct' && amount > state.balance - pendingDeductions) {
+    showToast(`You can request up to ${currency(Math.max(0, state.balance - pendingDeductions))}.`);
+    return;
+  }
+
+  const note = $('#noteInput').value.trim() || (currentMoneyAction === 'deduct' ? 'Virtual spending' : 'Virtual savings');
   const addToGoal = $('#goalCheck').checked;
   const now = new Date().toISOString();
-  const transaction = { id: `local-${Date.now()}`, amount: Number(amount.toFixed(2)), note, type: 'save', createdAt: now };
-  state.balance = Number((state.balance + transaction.amount).toFixed(2));
-  if (addToGoal) state.goal.saved = Number((state.goal.saved + transaction.amount).toFixed(2));
-  state.transactions.unshift(transaction);
-  state.week[state.week.length - 1] = Number((state.week[state.week.length - 1] + transaction.amount).toFixed(2));
-  state.streak = Math.max(1, state.streak);
-  state.updatedAt = now;
-  state.reviewRequestedAt = now;
-  persistLocal();
+  const request = {
+    id: `request-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    action: currentMoneyAction,
+    amount: Number(amount.toFixed(2)),
+    note,
+    addToGoal,
+    status: 'pending',
+    requestedAt: now,
+  };
 
   closeModal('addModal');
   $('#addMoneyForm').reset();
-  renderAll();
-  showToast(`${currency(transaction.amount)} saved in Virtual Money.`);
-
-  const synced = await sendToServer(`/api/family/${encodeURIComponent(familyCode)}/transactions`, { transaction, addToGoal });
-  if (synced) {
-    renderAll();
-    showToast('Saved and synced with Dad.');
+  if (serverAvailable) {
+    const synced = await sendToServer(`/api/family/${encodeURIComponent(familyCode)}/requests`, { request });
+    if (!synced) {
+      renderAll();
+      showToast('The request could not be sent. Please try again.');
+      return;
+    }
+  } else {
+    state.pendingRequests.unshift(request);
+    state.reviewRequestedAt = now;
+    state.updatedAt = now;
+    persistLocal();
   }
+  renderAll();
+  showToast(`${currency(request.amount)} sent to your parent for approval.`);
+}
+
+async function handleRequestDecisionClick(event) {
+  const button = event.target.closest('[data-request-action][data-request-id]');
+  if (!button) return;
+  const decision = button.dataset.requestAction;
+  const requestId = button.dataset.requestId;
+  const request = state.pendingRequests.find((item) => item.id === requestId && item.status === 'pending');
+  if (!request) return;
+  if (decision === 'approve' && request.action === 'deduct' && request.amount > state.balance) {
+    showToast('The balance is too low to approve this deduction.');
+    return;
+  }
+  button.disabled = true;
+
+  if (serverAvailable) {
+    const synced = await sendToServer(`/api/family/${encodeURIComponent(familyCode)}/requests/${encodeURIComponent(requestId)}/decision`, {
+      decision,
+      parentPin: parentCredential,
+    });
+    if (!synced) {
+      renderAll();
+      showToast('Could not record the decision. Please try again.');
+      return;
+    }
+  } else {
+    applyLocalDecision(request, decision);
+    state.updatedAt = new Date().toISOString();
+    persistLocal();
+  }
+  renderAll();
+  showToast(decision === 'approve' ? 'Request approved.' : 'Request declined.');
+}
+
+function applyLocalDecision(request, decision) {
+  request.status = decision === 'approve' ? 'approved' : 'declined';
+  request.reviewedAt = new Date().toISOString();
+  if (decision !== 'approve') return;
+
+  const isDeduction = request.action === 'deduct';
+  const amount = Number(request.amount);
+  state.balance = Number((state.balance + (isDeduction ? -amount : amount)).toFixed(2));
+  if (request.addToGoal) {
+    state.goal.saved = Number(Math.max(0, state.goal.saved + (isDeduction ? -amount : amount)).toFixed(2));
+  }
+  const transaction = {
+    id: request.id,
+    amount,
+    note: request.note,
+    type: isDeduction ? 'spend' : 'save',
+    createdAt: request.reviewedAt,
+  };
+  state.transactions.unshift(transaction);
+  if (!isDeduction) {
+    state.week[state.week.length - 1] = Number((state.week[state.week.length - 1] + amount).toFixed(2));
+    state.streak = Math.max(1, state.streak);
+  }
+  state.reviewedAt = request.reviewedAt;
 }
 
 async function saveParentNote() {
@@ -454,7 +586,8 @@ function monthSaved() {
   const now = new Date();
   return state.transactions.reduce((sum, item) => {
     const date = new Date(item.createdAt);
-    return date.getMonth() === now.getMonth() && date.getFullYear() === now.getFullYear() ? sum + Number(item.amount || 0) : sum;
+    const amount = Number(item.amount || 0) * (item.type === 'spend' ? -1 : 1);
+    return date.getMonth() === now.getMonth() && date.getFullYear() === now.getFullYear() ? sum + amount : sum;
   }, 0) || state.transactions.slice(0, 2).reduce((sum, item) => sum + Number(item.amount || 0), 0);
 }
 

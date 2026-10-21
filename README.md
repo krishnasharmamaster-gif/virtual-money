@@ -2,7 +2,7 @@
 
 Virtual Money is a small, mobile-first virtual savings app. It lets a child record pretend savings toward a goal and gives a parent a private review view with the same balance, activity, and a note field.
 
-There are no payments, bank connections, or real-money transfers in this prototype.
+There are no payments, bank connections, or real-money transfers in this prototype. Deposits and deductions are only virtual requests: they stay pending until a parent approves or declines them in the review view.
 
 ## Open it
 
@@ -29,6 +29,6 @@ The included `render.yaml` is ready for a Render web service. Render supplies th
 
 - Responsive savings dashboard for phone and desktop
 - Virtual balance, goal progress, weekly rhythm chart, and activity feed
-- Add-money modal with preset amounts and an optional note
-- Parent review view with family code, private link, activity, and parent note
+- Deposit and deduction requests with preset amounts and an optional note
+- Parent review view with approval/decline controls, family code, private link, activity, and parent note
 - LocalStorage fallback plus optional Python sync API
