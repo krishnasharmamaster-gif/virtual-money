@@ -3,6 +3,7 @@ const LEGACY_STORAGE_PREFIX = 'nest-family-';
 const DEFAULT_FAMILY = 'VM-2047';
 const DEFAULT_STATE = {
   familyCode: DEFAULT_FAMILY,
+  planTier: 'max',
   parentPin: '2047',
   profile: {
     childName: 'Alex',
@@ -59,6 +60,7 @@ let parentCredential = '';
 let currentMoneyAction = 'add';
 let lastServerError = '';
 let toastTimer = null;
+let appInitialized = false;
 
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => Array.from(document.querySelectorAll(selector));
@@ -66,6 +68,90 @@ const $$ = (selector) => Array.from(document.querySelectorAll(selector));
 document.addEventListener('DOMContentLoaded', init);
 
 async function init() {
+  $('#loginForm').addEventListener('submit', handleLoginSubmit);
+  $('#signOutButton').addEventListener('click', signOut);
+  await checkLoginSession();
+}
+
+async function checkLoginSession() {
+  if (window.location.protocol === 'file:') {
+    await startApp();
+    showToast('Local preview only — this device is not synced to the family website.');
+    return;
+  }
+
+  try {
+    const response = await fetch('/api/session', { headers: { Accept: 'application/json' }, cache: 'no-store' });
+    const session = await response.json();
+    if (session.authenticated) {
+      await startApp();
+      return;
+    }
+    showLoginGate(Boolean(session.configured));
+  } catch (error) {
+    showLoginGate(true, 'Could not reach the family server. Check your connection and try again.');
+  }
+}
+
+function showLoginGate(configured, message = '') {
+  document.body.classList.add('auth-locked');
+  document.body.classList.remove('auth-pending');
+  $('#authGate').classList.remove('hidden');
+  $('#loginForm').classList.toggle('hidden', !configured);
+  $('#authMessage').textContent = message || (configured
+    ? 'Sign in with your family username and 4-digit code.'
+    : 'Private sign-in is not configured yet. Ask the site owner to set the VIRTUAL_MONEY_USERNAME and VIRTUAL_MONEY_PIN secrets on the web host.');
+  $('#signOutButton').classList.add('hidden');
+}
+
+function unlockLoginGate() {
+  document.body.classList.remove('auth-pending', 'auth-locked');
+  $('#authGate').classList.add('hidden');
+  $('#signOutButton').classList.remove('hidden');
+}
+
+async function handleLoginSubmit(event) {
+  event.preventDefault();
+  const button = $('#loginButton');
+  const error = $('#loginError');
+  error.classList.add('hidden');
+  button.disabled = true;
+  try {
+    const response = await fetch('/api/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+      body: JSON.stringify({
+        username: $('#loginUsername').value.trim(),
+        pin: $('#loginPin').value,
+      }),
+    });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(result.error || 'Could not sign in. Please try again.');
+    $('#loginPin').value = '';
+    unlockLoginGate();
+    await startApp();
+  } catch (loginError) {
+    error.textContent = loginError.message || 'Could not sign in. Please try again.';
+    error.classList.remove('hidden');
+    $('#loginPin').value = '';
+    $('#loginPin').focus();
+  } finally {
+    button.disabled = false;
+  }
+}
+
+async function signOut() {
+  try {
+    await fetch('/api/logout', { method: 'POST', headers: { Accept: 'application/json' } });
+  } finally {
+    window.location.reload();
+  }
+}
+
+async function startApp() {
+  if (appInitialized) return;
+  appInitialized = true;
+  unlockLoginGate();
   state = getLocalState();
   renderAll();
   bindEvents();
@@ -94,6 +180,7 @@ function bindEvents() {
   $('#addGoalButton').addEventListener('click', openGoalModal);
   $('#goalForm').addEventListener('submit', handleCreateGoal);
   $('#goalList').addEventListener('click', handleGoalActionClick);
+  $('#planGrid').addEventListener('click', handlePlanSelect);
 
   $$('.modal-close').forEach((button) => {
     button.addEventListener('click', () => closeModal(button.dataset.closeModal));
@@ -180,6 +267,7 @@ function mergeState(next) {
     ...DEFAULT_STATE,
     ...next,
     familyCode,
+    planTier: next?.planTier === 'pro' ? 'pro' : next?.planTier === 'max' ? 'max' : DEFAULT_STATE.planTier,
     profile: { ...DEFAULT_STATE.profile, ...(next?.profile || {}) },
     goals,
     activeGoalId: activeGoal?.id || null,
@@ -270,6 +358,7 @@ function renderAll() {
   renderGoal();
   renderWeek();
   renderActivity();
+  renderPlan();
   renderParentView();
   updateShareLinks();
 }
@@ -396,6 +485,48 @@ function renderParentView() {
   $('#savedNoteLabel').textContent = state.reviewedAt ? `Saved ${updatedLabel(state.reviewedAt).toLowerCase()}` : 'Not saved yet';
   $('#familyCodeDisplay').textContent = state.familyCode;
   $('#modalParentCode').textContent = state.parentPin;
+}
+
+const PLAN_LABELS = {
+  pro: { name: 'Virtual Pro', price: '₹100 / month' },
+  max: { name: 'Virtual Max', price: '₹9,999 / month' },
+};
+
+function renderPlan() {
+  const tier = state.planTier === 'pro' ? 'pro' : 'max';
+  $$('.plan-card').forEach((card) => {
+    const selected = card.dataset.planCard === tier;
+    card.classList.toggle('is-selected', selected);
+    const label = card.querySelector('[data-selected-label]');
+    const button = card.querySelector('[data-plan-select]');
+    label.classList.toggle('hidden', !selected);
+    button.textContent = selected ? 'Selected for this demo' : `Preview ${card.dataset.planCard === 'pro' ? 'Pro' : 'Max'}`;
+    button.setAttribute('aria-pressed', String(selected));
+  });
+  $('#parentPlanName').textContent = PLAN_LABELS[tier].name;
+  $('#parentPlanPrice').textContent = PLAN_LABELS[tier].price;
+}
+
+async function handlePlanSelect(event) {
+  const button = event.target.closest('[data-plan-select]');
+  if (!button) return;
+  const planTier = button.dataset.planSelect;
+  if (!['pro', 'max'].includes(planTier) || planTier === state.planTier) return;
+
+  if (serverAvailable) {
+    const synced = await sendToServer(`/api/family/${encodeURIComponent(familyCode)}/plan`, { planTier });
+    if (!synced) {
+      showToast(lastServerError || 'Could not update the demo plan. Please try again.');
+      return;
+    }
+  } else {
+    state.planTier = planTier;
+    state.updatedAt = new Date().toISOString();
+    persistLocal();
+  }
+
+  renderAll();
+  showToast(`${PLAN_LABELS[planTier].name} selected for this demo. No payment was made.`);
 }
 
 function openGoalModal() {

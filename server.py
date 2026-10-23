@@ -11,13 +11,18 @@ the child view and parent review view can read the same virtual balance.
 from __future__ import annotations
 
 import copy
+import hashlib
+import hmac
 import json
 import math
 import os
 import re
+import secrets
 import threading
+import time
 import uuid
 from datetime import datetime, timezone
+from http.cookies import SimpleCookie
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import unquote, urlparse
@@ -27,6 +32,41 @@ ROOT = Path(__file__).resolve().parent
 DATA_DIR = ROOT / "data"
 DATA_FILE = DATA_DIR / "families.json"
 LOCK = threading.Lock()
+AUTH_USERNAME = os.environ.get("VIRTUAL_MONEY_USERNAME", "").strip()
+AUTH_PIN = os.environ.get("VIRTUAL_MONEY_PIN", "").strip()
+SESSION_SIGNING_KEY = secrets.token_bytes(32)
+SESSION_COOKIE = "virtual_money_session"
+SESSION_TTL_SECONDS = 8 * 60 * 60
+LOGIN_MAX_ATTEMPTS = 5
+LOGIN_FAILURE_COUNT = 0
+LOGIN_LOCKED_UNTIL = 0.0
+LOGIN_LOCK = threading.Lock()
+
+
+def auth_is_configured() -> bool:
+    return bool(AUTH_USERNAME) and bool(re.fullmatch(r"\d{4}", AUTH_PIN))
+
+
+def session_signature(expires_at: int) -> str:
+    message = f"{AUTH_USERNAME.casefold()}:{expires_at}".encode("utf-8")
+    return hmac.new(SESSION_SIGNING_KEY, message, hashlib.sha256).hexdigest()
+
+
+def login_lockout_seconds() -> int:
+    with LOGIN_LOCK:
+        return max(0, int(LOGIN_LOCKED_UNTIL - time.time()))
+
+
+def record_failed_login() -> int:
+    global LOGIN_FAILURE_COUNT, LOGIN_LOCKED_UNTIL
+    with LOGIN_LOCK:
+        LOGIN_FAILURE_COUNT += 1
+        if LOGIN_FAILURE_COUNT < LOGIN_MAX_ATTEMPTS:
+            return 0
+        exponent = LOGIN_FAILURE_COUNT - LOGIN_MAX_ATTEMPTS
+        cooldown = min(24 * 60 * 60, (15 * 60) * (2 ** min(exponent, 7)))
+        LOGIN_LOCKED_UNTIL = time.time() + cooldown
+        return cooldown
 
 
 def now_iso() -> str:
@@ -36,6 +76,7 @@ def now_iso() -> str:
 def default_family(code: str) -> dict:
     return {
         "familyCode": code,
+        "planTier": "max",
         "parentPin": "2047",
         "profile": {"childName": "Alex", "parentName": "Dad", "initials": "AK"},
         "balance": 128.5,
@@ -87,6 +128,7 @@ def json_bytes(payload: dict) -> bytes:
 
 
 def ensure_goal_data(family: dict) -> dict:
+    family["planTier"] = family.get("planTier") if family.get("planTier") in ("pro", "max") else "max"
     goals = family.get("goals")
     if not isinstance(goals, list):
         legacy_goal = family.get("goal")
@@ -129,7 +171,7 @@ class VirtualMoneyHandler(SimpleHTTPRequestHandler):
     def log_message(self, format: str, *args) -> None:  # noqa: A002
         print(f"[virtual-money] {self.address_string()} - {format % args}")
 
-    def send_json(self, status: int, payload: dict) -> None:
+    def send_json(self, status: int, payload: dict, headers: list[tuple[str, str]] | None = None) -> None:
         if "familyCode" in payload:
             payload = copy.deepcopy(payload)
             payload.pop("parentPin", None)
@@ -138,8 +180,31 @@ class VirtualMoneyHandler(SimpleHTTPRequestHandler):
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
+        for name, value in headers or []:
+            self.send_header(name, value)
         self.end_headers()
         self.wfile.write(body)
+
+    def has_valid_session(self) -> bool:
+        cookie = SimpleCookie()
+        try:
+            cookie.load(self.headers.get("Cookie", ""))
+            morsel = cookie.get(SESSION_COOKIE)
+            if morsel is None:
+                return False
+            expires_text, signature = morsel.value.split(".", 1)
+            expires_at = int(expires_text)
+        except (ValueError, TypeError):
+            return False
+        now = int(time.time())
+        if expires_at <= now or expires_at > now + SESSION_TTL_SECONDS:
+            return False
+        return hmac.compare_digest(signature, session_signature(expires_at))
+
+    def session_cookie(self, expires_at: int, max_age: int) -> str:
+        value = f"{expires_at}.{session_signature(expires_at)}"
+        secure = "; Secure" if self.headers.get("X-Forwarded-Proto", "").split(",", 1)[0].strip().lower() == "https" else ""
+        return f"{SESSION_COOKIE}={value}; Path=/; HttpOnly; SameSite=Lax; Max-Age={max_age}{secure}"
 
     def read_json(self) -> dict:
         try:
@@ -169,7 +234,20 @@ class VirtualMoneyHandler(SimpleHTTPRequestHandler):
 
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
+        if parsed.path == "/api/session":
+            configured = auth_is_configured()
+            self.send_json(200, {
+                "configured": configured,
+                "authenticated": configured and self.has_valid_session(),
+            })
+            return
         if parsed.path.startswith("/api/"):
+            if not auth_is_configured():
+                self.send_json(503, {"error": "Private sign-in is not configured on the server yet."})
+                return
+            if not self.has_valid_session():
+                self.send_json(401, {"error": "Sign in to access this family space."})
+                return
             code = family_code_from_path(parsed.path)
             if code and parsed.path == f"/api/family/{code}":
                 public_family = self.get_family(code)
@@ -178,10 +256,52 @@ class VirtualMoneyHandler(SimpleHTTPRequestHandler):
                 return
             self.send_json(404, {"error": "Not found"})
             return
+        if parsed.path == "/data" or parsed.path.startswith("/data/"):
+            self.send_error(404)
+            return
         super().do_GET()
 
     def do_POST(self) -> None:
         parsed = urlparse(self.path)
+        if parsed.path == "/api/login":
+            if not auth_is_configured():
+                self.send_json(503, {"error": "Private sign-in is not configured on the server yet."})
+                return
+            wait_seconds = login_lockout_seconds()
+            if wait_seconds:
+                self.send_json(429, {"error": "Too many sign-in attempts. Please wait 15 minutes and try again."})
+                return
+            payload = self.read_json()
+            username = str(payload.get("username") or "").strip()
+            pin = str(payload.get("pin") or "")
+            valid_username = hmac.compare_digest(username.casefold().encode("utf-8"), AUTH_USERNAME.casefold().encode("utf-8"))
+            valid_pin = hmac.compare_digest(pin, AUTH_PIN)
+            if not (valid_username and valid_pin):
+                wait_seconds = record_failed_login()
+                status = 429 if wait_seconds else 401
+                message = "Too many sign-in attempts. Please wait 15 minutes and try again." if wait_seconds else "That username or 4-digit code is incorrect."
+                self.send_json(status, {"error": message})
+                return
+            global LOGIN_FAILURE_COUNT, LOGIN_LOCKED_UNTIL
+            with LOGIN_LOCK:
+                LOGIN_FAILURE_COUNT = 0
+                LOGIN_LOCKED_UNTIL = 0.0
+            expires_at = int(time.time()) + SESSION_TTL_SECONDS
+            self.send_json(200, {"authenticated": True}, headers=[
+                ("Set-Cookie", self.session_cookie(expires_at, SESSION_TTL_SECONDS)),
+            ])
+            return
+        if parsed.path == "/api/logout":
+            self.send_json(200, {"authenticated": False}, headers=[
+                ("Set-Cookie", self.session_cookie(0, 0)),
+            ])
+            return
+        if not auth_is_configured():
+            self.send_json(503, {"error": "Private sign-in is not configured on the server yet."})
+            return
+        if not self.has_valid_session():
+            self.send_json(401, {"error": "Sign in to access this family space."})
+            return
         code = family_code_from_path(parsed.path)
         if not code:
             self.send_json(404, {"error": "Not found"})
@@ -189,6 +309,16 @@ class VirtualMoneyHandler(SimpleHTTPRequestHandler):
 
         family = self.get_family(code)
         payload = self.read_json()
+
+        if parsed.path == f"/api/family/{code}/plan":
+            plan_tier = payload.get("planTier")
+            if plan_tier not in ("pro", "max"):
+                self.send_json(400, {"error": "Choose a valid demo plan"})
+                return
+            family["planTier"] = plan_tier
+            family["updatedAt"] = now_iso()
+            self.send_json(200, self.save_family(code, family))
+            return
 
         if parsed.path == f"/api/family/{code}/goals":
             action = payload.get("action")

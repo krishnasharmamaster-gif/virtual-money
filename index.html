@@ -14,7 +14,31 @@
     <title>Virtual Money — save at your own pace</title>
     <link rel="stylesheet" href="styles.css" />
   </head>
-  <body>
+  <body class="auth-pending">
+    <main class="auth-gate" id="authGate" aria-labelledby="authTitle">
+      <section class="auth-card">
+        <a class="brand auth-brand" href="#" aria-label="Virtual Money">
+          <span class="brand-mark" aria-hidden="true">v</span>
+          <span>
+            <span class="brand-name">virtual money</span>
+            <span class="brand-tagline">your private family space</span>
+          </span>
+        </a>
+        <div class="auth-lock-mark" aria-hidden="true">⌑</div>
+        <p class="eyebrow">PRIVATE FAMILY LOGIN</p>
+        <h1 id="authTitle">Welcome back.</h1>
+        <p class="auth-copy" id="authMessage">Sign in with your family username and 4-digit code.</p>
+        <form id="loginForm">
+          <label class="field-label" for="loginUsername">USERNAME</label>
+          <input class="text-input" id="loginUsername" name="username" type="text" maxlength="40" autocomplete="username" autocapitalize="none" required />
+          <label class="field-label" for="loginPin">4-DIGIT CODE</label>
+          <input class="text-input pin-input" id="loginPin" name="pin" type="password" inputmode="numeric" pattern="[0-9]{4}" maxlength="4" autocomplete="current-password" placeholder="••••" required />
+          <p class="error-text hidden" id="loginError" role="alert"></p>
+          <button class="primary-button full-width" id="loginButton" type="submit">Open family space <span aria-hidden="true">→</span></button>
+        </form>
+        <p class="auth-footnote">Only people with the family sign-in can view this space.</p>
+      </section>
+    </main>
     <div class="app-shell">
       <header class="topbar">
         <a class="brand" href="#savings" aria-label="Virtual Money savings home">
@@ -30,6 +54,7 @@
             <span class="sync-dot" aria-hidden="true"></span>
             Local preview
           </span>
+          <button class="text-button sign-out-button hidden" id="signOutButton" type="button">Sign out</button>
           <button class="avatar-button" id="profileButton" type="button" aria-label="Open profile">
             AK
           </button>
@@ -151,6 +176,55 @@
               </section>
             </div>
 
+            <section class="plans-section" aria-labelledby="plansTitle">
+              <div class="section-heading-row plans-heading">
+                <div>
+                  <p class="eyebrow">VIRTUAL TIERS</p>
+                  <h2 id="plansTitle">A little more room to grow</h2>
+                  <p class="plans-intro">Preview the Virtual Pro and Virtual Max ideas for your family space.</p>
+                </div>
+                <span class="demo-only-pill"><span aria-hidden="true">✦</span> DEMO ONLY</span>
+              </div>
+              <p class="plans-safety-note">Sample prices only. Nothing is purchased, and no payment or subscription is created.</p>
+              <div class="plan-grid" id="planGrid" aria-live="polite">
+                <article class="plan-card plan-card-pro" data-plan-card="pro">
+                  <div class="plan-card-topline">
+                    <span class="plan-icon" aria-hidden="true">✧</span>
+                    <span class="plan-selected-label hidden" data-selected-label="pro">Selected for this demo</span>
+                  </div>
+                  <p class="mini-label">VIRTUAL PRO</p>
+                  <h3>More ways to practice.</h3>
+                  <p class="plan-price"><strong>₹100</strong><span>/ month</span></p>
+                  <ul class="plan-perks">
+                    <li>Goal and savings progress</li>
+                    <li>Transaction activity view</li>
+                    <li>Parent-reviewed virtual requests</li>
+                  </ul>
+                  <button class="plan-select-button" type="button" data-plan-select="pro">Preview Pro</button>
+                </article>
+
+                <article class="plan-card plan-card-max" data-plan-card="max">
+                  <span class="plan-ribbon">FAMILY FAVORITE</span>
+                  <div class="plan-card-topline">
+                    <span class="plan-icon" aria-hidden="true">✦</span>
+                    <span class="plan-selected-label hidden" data-selected-label="max">Selected for this demo</span>
+                  </div>
+                  <p class="mini-label">VIRTUAL MAX</p>
+                  <h3>Every little insight.</h3>
+                  <p class="plan-price"><strong>₹9,999</strong><span>/ month</span></p>
+                  <ul class="plan-perks">
+                    <li>Everything shown in Pro</li>
+                    <li>Full family progress snapshot</li>
+                    <li>Shared parent review view</li>
+                  </ul>
+                  <button class="plan-select-button" type="button" data-plan-select="max">Keep Max selected</button>
+                  <span class="plan-orbit plan-orbit-one" aria-hidden="true">✦</span>
+                  <span class="plan-orbit plan-orbit-two" aria-hidden="true">✧</span>
+                </article>
+              </div>
+              <p class="plan-sync-note"><span class="status-dot" aria-hidden="true"></span> The selected demo tier is shared with your parent review.</p>
+            </section>
+
             <section class="activity-section" id="activitySection" aria-labelledby="activityTitle">
               <div class="section-heading-row activity-heading">
                 <div>
@@ -229,6 +303,21 @@
               </section>
 
               <div class="parent-side-stack">
+                <section class="surface-card parent-plan-card" aria-labelledby="parentPlanTitle">
+                  <div class="card-heading-row">
+                    <div>
+                      <p class="mini-label">DEMO PLAN</p>
+                      <h2 id="parentPlanTitle">Family tier</h2>
+                    </div>
+                    <span class="parent-plan-spark" aria-hidden="true">✦</span>
+                  </div>
+                  <div class="parent-plan-details">
+                    <strong id="parentPlanName">Virtual Max</strong>
+                    <span id="parentPlanPrice">₹9,999 / month</span>
+                  </div>
+                  <p>Sample pricing for preview only. No subscription or charge is active.</p>
+                </section>
+
                 <section class="surface-card access-card" aria-labelledby="accessTitle">
                   <div class="card-heading-row">
                     <div>

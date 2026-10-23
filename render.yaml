@@ -5,3 +5,8 @@ services:
     plan: free
     buildCommand: ""
     startCommand: python server.py
+    envVars:
+      - key: VIRTUAL_MONEY_USERNAME
+        sync: false
+      - key: VIRTUAL_MONEY_PIN
+        sync: false

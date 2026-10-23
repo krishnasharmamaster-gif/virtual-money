@@ -1,1 +1,3 @@
 data/families.json
+.env
+.env.*
